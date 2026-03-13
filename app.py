@@ -19,7 +19,6 @@ PASSWORD = os.getenv("SF_PASSWORD", "")
 ML_MODEL = os.getenv("ML_MODEL", "llmgateway__OpenAIGPT4Omni_08_06")
 
 # -------- INLINE HTML TEMPLATE --------
-# The HTML is embedded directly into Python so no separate file is needed.
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
@@ -107,7 +106,8 @@ def generate_schema(instance_url: str, token: str, file_b64: str, mime_type: str
     if r.status_code in (200, 201):
         schema_str = r.json().get("schema")
         if schema_str:
-            return schema_str
+            # THE FIX: Unescape the HTML formatting (turn &quot; back into ")
+            return html.unescape(schema_str)
     raise Exception(f"Failed to generate schema. Status: {r.status_code}. Response: {r.text}")
 
 # -------- Step 2: Extract Data --------
@@ -161,19 +161,18 @@ def index():
 
                     token, instance_url = oauth_login()
                     
-                    # 1. Ask Salesforce to generate a dynamic schema based on this specific file
+                    # 1. Ask Salesforce to generate a dynamic schema
                     generated_schema = generate_schema(instance_url, token, file_b64, mime_type)
                     
-                    # 2. Pass that generated schema back to extract the actual data values
+                    # 2. Pass that clean schema back to extract the actual data
                     raw_extraction = extract_data(instance_url, token, file_b64, mime_type, generated_schema)
                     
-                    # 3. Clean up the response
+                    # 3. Parse and display
                     extracted_data = parse_extracted_values(raw_extraction)
 
                 except Exception as e:
                     error_message = str(e)
 
-    # Use render_template_string to load the HTML directly from the variable above
     return render_template_string(HTML_TEMPLATE, data=extracted_data, schema=generated_schema, error=error_message)
 
 if __name__ == "__main__":
