@@ -15,10 +15,9 @@ CLIENT_SECRET = os.getenv("SF_CLIENT_SECRET", "")
 USERNAME = os.getenv("SF_USERNAME", "")
 PASSWORD = os.getenv("SF_PASSWORD", "")
 
-# The model used for both generating the schema and extracting the data
 ML_MODEL = os.getenv("ML_MODEL", "llmgateway__OpenAIGPT4Omni_08_06")
 
-# -------- INLINE HTML TEMPLATE --------
+# -------- INLINE HTML TEMPLATE (WITH SPINNER) --------
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
@@ -33,6 +32,33 @@ HTML_TEMPLATE = """
         ul { list-style-type: none; padding: 0; }
         li { margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid #eee; }
         strong { color: #34495e; }
+        
+        /* Spinner CSS */
+        #loading-spinner {
+            display: none;
+            margin-top: 15px;
+        }
+        .loader {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3498db;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            display: inline-block;
+            vertical-align: middle;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .loading-text {
+            display: inline-block;
+            vertical-align: middle;
+            margin-left: 10px;
+            color: #555;
+            font-weight: bold;
+        }
     </style>
 </head>
 <body>
@@ -40,10 +66,15 @@ HTML_TEMPLATE = """
     <p>This app will first ask AI to generate a schema for your specific document, and then extract the data based on that custom schema.</p>
     
     <div class="box">
-        <form method="POST" enctype="multipart/form-data">
+        <form method="POST" enctype="multipart/form-data" id="uploadForm">
             <label for="document">Select a Document (PDF, JPG, PNG):</label><br><br>
             <input type="file" name="document" id="document" accept="application/pdf, image/jpeg, image/png" required><br><br>
-            <button type="submit" style="padding: 10px 15px; cursor: pointer;">Upload & Dynamically Extract</button>
+            <button type="submit" id="submitBtn" style="padding: 10px 15px; cursor: pointer;">Upload & Dynamically Extract</button>
+            
+            <div id="loading-spinner">
+                <div class="loader"></div>
+                <div class="loading-text">Working... this takes about 15-30 seconds.</div>
+            </div>
         </form>
     </div>
 
@@ -68,6 +99,14 @@ HTML_TEMPLATE = """
             </div>
         </div>
     {% endif %}
+
+    <script>
+        // Show spinner and hide button on submit
+        document.getElementById('uploadForm').addEventListener('submit', function() {
+            document.getElementById('submitBtn').style.display = 'none';
+            document.getElementById('loading-spinner').style.display = 'block';
+        });
+    </script>
 </body>
 </html>
 """
@@ -106,7 +145,7 @@ def generate_schema(instance_url: str, token: str, file_b64: str, mime_type: str
     if r.status_code in (200, 201):
         schema_str = r.json().get("schema")
         if schema_str:
-            # THE FIX: Unescape the HTML formatting (turn &quot; back into ")
+            # Unescape the HTML formatting (turn &quot; back into ")
             return html.unescape(schema_str)
     raise Exception(f"Failed to generate schema. Status: {r.status_code}. Response: {r.text}")
 
