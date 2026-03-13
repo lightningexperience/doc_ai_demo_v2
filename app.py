@@ -3,7 +3,7 @@ import html
 import json
 import os
 import requests
-from flask import Flask, request, render_template_string, jsonify
+from flask import Flask, request, render_template_string
 
 app = Flask(__name__)
 
@@ -17,7 +17,7 @@ PASSWORD = os.getenv("SF_PASSWORD", "")
 
 ML_MODEL = os.getenv("ML_MODEL", "llmgateway__OpenAIGPT4Omni_08_06")
 
-# -------- INLINE HTML TEMPLATE --------
+# -------- INLINE HTML TEMPLATE (WITH SPINNER) --------
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
@@ -26,113 +26,85 @@ HTML_TEMPLATE = """
     <style>
         body { font-family: Arial, sans-serif; margin: 40px; max-width: 700px; }
         .box { border: 1px solid #ccc; padding: 20px; border-radius: 5px; margin-top: 20px; }
-        .error { color: #e74c3c; font-weight: bold; background-color: #fadbd8; padding: 10px; border-radius: 5px; display: none;}
-        .result { font-size: 1.1em; color: #2c3e50; display: none; }
+        .error { color: #e74c3c; font-weight: bold; background-color: #fadbd8; padding: 10px; border-radius: 5px;}
+        .result { font-size: 1.1em; color: #2c3e50; }
         .debug-data { font-size: 0.85em; color: #7f8c8d; background-color: #f9f9f9; padding: 15px; border-radius: 4px; margin-top: 20px; word-wrap: break-word; }
         ul { list-style-type: none; padding: 0; }
         li { margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid #eee; }
         strong { color: #34495e; }
         
         /* Spinner CSS */
-        #loading-container { display: none; margin-top: 15px; }
-        .loader {
-            border: 4px solid #f3f3f3; border-top: 4px solid #3498db; border-radius: 50%;
-            width: 25px; height: 25px; animation: spin 1s linear infinite; display: inline-block; vertical-align: middle;
+        #loading-spinner {
+            display: none;
+            margin-top: 15px;
         }
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-        #status-text { display: inline-block; vertical-align: middle; margin-left: 10px; color: #555; font-weight: bold; }
+        .loader {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3498db;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            display: inline-block;
+            vertical-align: middle;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .loading-text {
+            display: inline-block;
+            vertical-align: middle;
+            margin-left: 10px;
+            color: #555;
+            font-weight: bold;
+        }
     </style>
 </head>
 <body>
     <h2>Upload Any Document (Dynamic Extraction)</h2>
-    <p>This app avoids Heroku timeouts by splitting the AI tasks into two steps.</p>
+    <p>This app will first ask AI to generate a schema for your specific document, and then extract the data based on that custom schema.</p>
     
     <div class="box">
-        <form id="uploadForm">
+        <form method="POST" enctype="multipart/form-data" id="uploadForm">
             <label for="document">Select a Document (PDF, JPG, PNG):</label><br><br>
             <input type="file" name="document" id="document" accept="application/pdf, image/jpeg, image/png" required><br><br>
             <button type="submit" id="submitBtn" style="padding: 10px 15px; cursor: pointer;">Upload & Dynamically Extract</button>
             
-            <div id="loading-container">
+            <div id="loading-spinner">
                 <div class="loader"></div>
-                <div id="status-text">Starting...</div>
+                <div class="loading-text">Working... this takes about 15-30 seconds.</div>
             </div>
         </form>
     </div>
 
-    <div class="error" id="error-box"></div>
-
-    <div class="box result" id="result-box">
-        <h3>Extraction Results:</h3>
-        <ul id="result-list"></ul>
-        
-        <div class="debug-data">
-            <p><strong>Generated Schema (Debug):</strong></p>
-            <pre id="debug-schema"></pre>
+    {% if error %}
+        <div class="error">
+            <p>Error: {{ error }}</p>
         </div>
-    </div>
+    {% endif %}
+
+    {% if data %}
+        <div class="box result">
+            <h3>Extraction Results:</h3>
+            <ul>
+                {% for key, value in data.items() %}
+                    <li><strong>{{ key | replace('_', ' ') | title }}:</strong> <br>{{ value }}</li>
+                {% endfor %}
+            </ul>
+            
+            <div class="debug-data">
+                <p><strong>Generated Schema (Debug):</strong></p>
+                <pre>{{ schema }}</pre>
+            </div>
+        </div>
+    {% endif %}
 
     <script>
-        document.getElementById('uploadForm').addEventListener('submit', async function(e) {
-            e.preventDefault(); // Prevent standard form submission
-            
-            const fileInput = document.getElementById('document');
-            const file = fileInput.files[0];
-            if (!file) return;
-
-            // UI Updates
+        // Show spinner and hide button on submit
+        document.getElementById('uploadForm').addEventListener('submit', function() {
             document.getElementById('submitBtn').style.display = 'none';
-            document.getElementById('error-box').style.display = 'none';
-            document.getElementById('result-box').style.display = 'none';
-            document.getElementById('loading-container').style.display = 'block';
-            
-            try {
-                // STEP 1: Generate Schema
-                document.getElementById('status-text').innerText = "Step 1/2: AI is generating a schema (approx 15s)...";
-                let formData1 = new FormData();
-                formData1.append('document', file);
-                
-                let res1 = await fetch('/generate', { method: 'POST', body: formData1 });
-                let data1 = await res1.json();
-                if (data1.error) throw new Error(data1.error);
-
-                // STEP 2: Extract Data
-                document.getElementById('status-text').innerText = "Step 2/2: Extracting data using new schema (approx 15s)...";
-                let formData2 = new FormData();
-                formData2.append('document', file);
-                formData2.append('schema', data1.schema);
-
-                let res2 = await fetch('/extract', { method: 'POST', body: formData2 });
-                let data2 = await res2.json();
-                if (data2.error) throw new Error(data2.error);
-
-                // UI Updates: Success
-                document.getElementById('loading-container').style.display = 'none';
-                document.getElementById('result-box').style.display = 'block';
-                
-                // Populate List
-                const ul = document.getElementById('result-list');
-                ul.innerHTML = '';
-                for (const [key, value] of Object.entries(data2.data)) {
-                    // Format key nicely (e.g., first_name -> First Name)
-                    let niceKey = key.replace(/_/g, ' ').replace(/\\b\\w/g, l => l.toUpperCase());
-                    let li = document.createElement('li');
-                    li.innerHTML = `<strong>${niceKey}:</strong> <br>${value}`;
-                    ul.appendChild(li);
-                }
-                
-                // Populate Debug Schema
-                document.getElementById('debug-schema').innerText = data1.schema;
-
-            } catch (err) {
-                // UI Updates: Error
-                document.getElementById('loading-container').style.display = 'none';
-                const errorBox = document.getElementById('error-box');
-                errorBox.style.display = 'block';
-                errorBox.innerText = "Error: " + err.message;
-            } finally {
-                document.getElementById('submitBtn').style.display = 'inline-block';
-            }
+            document.getElementById('loading-spinner').style.display = 'block';
         });
     </script>
 </body>
@@ -146,6 +118,7 @@ def headers_json(tok: str):
 def ssot_base(inst: str) -> str:
     return f"{inst}/services/data/{API_VERSION}/ssot/document-processing"
 
+# -------- Auth --------
 def oauth_login():
     token_url = f"{LOGIN_URL}/services/oauth2/token"
     data = {
@@ -161,69 +134,85 @@ def oauth_login():
     j = r.json()
     return j.get("access_token"), j.get("instance_url")
 
+# -------- Step 1: Generate Schema --------
+def generate_schema(instance_url: str, token: str, file_b64: str, mime_type: str) -> str:
+    url = f"{ssot_base(instance_url)}/actions/generate-schema"
+    payload = {
+        "mlModel": ML_MODEL,
+        "files": [{"data": file_b64, "mimeType": mime_type}]
+    }
+    r = requests.post(url, headers=headers_json(token), data=json.dumps(payload))
+    if r.status_code in (200, 201):
+        schema_str = r.json().get("schema")
+        if schema_str:
+            # Unescape the HTML formatting (turn &quot; back into ")
+            return html.unescape(schema_str)
+    raise Exception(f"Failed to generate schema. Status: {r.status_code}. Response: {r.text}")
+
+# -------- Step 2: Extract Data --------
+def extract_data(instance_url: str, token: str, file_b64: str, mime_type: str, schema_str: str) -> dict:
+    url = f"{ssot_base(instance_url)}/actions/extract-data"
+    payload = {
+        "schemaConfig": schema_str,
+        "mlModel": ML_MODEL,
+        "files": [{"data": file_b64, "mimeType": mime_type}]
+    }
+    r = requests.post(url, headers=headers_json(token), data=json.dumps(payload))
+    if r.status_code in (200, 201):
+        return r.json()
+    raise Exception(f"Extraction failed. Status: {r.status_code}. Response: {r.text}")
+
+def parse_extracted_values(extract_body: dict) -> dict:
+    data_list = extract_body.get("data")
+    if isinstance(data_list, list) and data_list:
+        inner_str = data_list[0].get("data")
+        if inner_str:
+            inner = json.loads(html.unescape(inner_str))
+            if isinstance(inner, dict):
+                flat = {}
+                for k, v in inner.items():
+                    if isinstance(v, dict) and "value" in v:
+                        flat[k] = v.get("value")
+                    else:
+                        flat[k] = v
+                return flat
+    return {}
+
 # -------- Web Routes --------
-@app.route("/", methods=["GET"])
+@app.route("/", methods=["GET", "POST"])
 def index():
-    # Just serve the frontend UI
-    return render_template_string(HTML_TEMPLATE)
+    extracted_data = None
+    generated_schema = None
+    error_message = None
 
-@app.route("/generate", methods=["POST"])
-def api_generate():
-    # API Endpoint for Step 1
-    try:
-        file = request.files["document"]
-        file_bytes = file.read()
-        file_b64 = base64.b64encode(file_bytes).decode("utf-8")
-        
-        token, instance_url = oauth_login()
-        url = f"{ssot_base(instance_url)}/actions/generate-schema"
-        payload = {
-            "mlModel": ML_MODEL,
-            "files": [{"data": file_b64, "mimeType": file.mimetype}]
-        }
-        r = requests.post(url, headers=headers_json(token), data=json.dumps(payload))
-        
-        if r.status_code in (200, 201):
-            schema_str = r.json().get("schema")
-            if schema_str:
-                return jsonify({"schema": html.unescape(schema_str)})
-        return jsonify({"error": f"Schema generation failed. Status: {r.status_code} Response: {r.text}"}), 400
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    if request.method == "POST":
+        if "document" not in request.files:
+            error_message = "No file uploaded."
+        else:
+            file = request.files["document"]
+            if file.filename == "":
+                error_message = "No file selected."
+            else:
+                try:
+                    file_bytes = file.read()
+                    file_b64 = base64.b64encode(file_bytes).decode("utf-8")
+                    mime_type = file.mimetype
 
-@app.route("/extract", methods=["POST"])
-def api_extract():
-    # API Endpoint for Step 2
-    try:
-        file = request.files["document"]
-        schema_str = request.form["schema"]
-        file_bytes = file.read()
-        file_b64 = base64.b64encode(file_bytes).decode("utf-8")
-        
-        token, instance_url = oauth_login()
-        url = f"{ssot_base(instance_url)}/actions/extract-data"
-        payload = {
-            "schemaConfig": schema_str,
-            "mlModel": ML_MODEL,
-            "files": [{"data": file_b64, "mimeType": file.mimetype}]
-        }
-        r = requests.post(url, headers=headers_json(token), data=json.dumps(payload))
-        
-        if r.status_code in (200, 201):
-            body = r.json()
-            data_list = body.get("data")
-            flat = {}
-            if isinstance(data_list, list) and data_list:
-                inner_str = data_list[0].get("data")
-                if inner_str:
-                    inner = json.loads(html.unescape(inner_str))
-                    for k, v in inner.items():
-                        flat[k] = v.get("value") if isinstance(v, dict) and "value" in v else v
-            return jsonify({"data": flat})
-            
-        return jsonify({"error": f"Extraction failed. Status: {r.status_code} Response: {r.text}"}), 400
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+                    token, instance_url = oauth_login()
+                    
+                    # 1. Ask Salesforce to generate a dynamic schema
+                    generated_schema = generate_schema(instance_url, token, file_b64, mime_type)
+                    
+                    # 2. Pass that clean schema back to extract the actual data
+                    raw_extraction = extract_data(instance_url, token, file_b64, mime_type, generated_schema)
+                    
+                    # 3. Parse and display
+                    extracted_data = parse_extracted_values(raw_extraction)
+
+                except Exception as e:
+                    error_message = str(e)
+
+    return render_template_string(HTML_TEMPLATE, data=extracted_data, schema=generated_schema, error=error_message)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
